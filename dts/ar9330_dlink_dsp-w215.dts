@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
+/dts-v1/;
+
+#include "ar9330.dtsi"
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+
+/*
+ * D-Link DSP-W215 Wi-Fi smart plug — Atheros AR9330 (Hornet).
+ *
+ * Values marked CONFIRM: must be verified on real hardware (see HARDWARE.md):
+ *   - flash size + exact partition offsets (cat /proc/mtd)
+ *   - relay GPIO number, button GPIO number(s), LED polarity, 3rd LED (gpio19)
+ *   - whether the PL8331 meter shares this UART with the console
+ */
+
+/ {
+	compatible = "dlink,dsp-w215", "qca,ar9330";
+	model = "D-Link DSP-W215";
+
+	aliases {
+		serial0 = &uart;
+		led-boot = &led_status_red;
+		led-failsafe = &led_status_red;
+		led-running = &led_status_green;
+		led-upgrade = &led_status_red;
+		label-mac-device = &wmac;
+	};
+
+	chosen {
+		bootargs = "console=ttyS0,115200";
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		led_status_green: led-0 {
+			/* CONFIRM polarity (ACTIVE_LOW assumed) */
+			function = LED_FUNCTION_STATUS;
+			color = <LED_COLOR_ID_GREEN>;
+			gpios = <&gpio 26 GPIO_ACTIVE_LOW>;
+		};
+
+		led_status_red: led-1 {
+			function = LED_FUNCTION_STATUS;
+			color = <LED_COLOR_ID_RED>;
+			gpios = <&gpio 27 GPIO_ACTIVE_LOW>;
+		};
+
+		/* CONFIRM: stock boot also toggles gpio19 — identify what it drives.
+		led-2 {
+			function = LED_FUNCTION_WPS;
+			color = <LED_COLOR_ID_BLUE>;
+			gpios = <&gpio 19 GPIO_ACTIVE_LOW>;
+		};
+		*/
+	};
+
+	keys {
+		compatible = "gpio-keys";
+
+		/* AR933x jumpstart/simple_config button. CONFIRM gpio number (often 11). */
+		reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&gpio 11 GPIO_ACTIVE_LOW>;
+			debounce-interval = <60>;
+		};
+		/* CONFIRM: WPS may be a separate button or the same one.
+		wps {
+			label = "wps";
+			linux,code = <KEY_WPS_BUTTON>;
+			gpios = <&gpio 12 GPIO_ACTIVE_LOW>;
+			debounce-interval = <60>;
+		};
+		*/
+	};
+
+	/*
+	 * Relay (mains switch). Exported so userspace (dspw215-meterd) and LuCI can
+	 * drive it. CONFIRM the GPIO number — kernel calls it RELAY_SWITCH_GPIO.
+	 */
+	gpio-export {
+		compatible = "gpio-export";
+		#size-cells = <0>;
+
+		relay {
+			gpio-export,name = "relay";
+			gpio-export,output = <0>;   /* default OFF */
+			gpios = <&gpio 14 GPIO_ACTIVE_HIGH>;   /* CONFIRM number + polarity */
+		};
+	};
+};
+
+&uart {
+	status = "okay";
+};
+
+&gpio {
+	status = "okay";
+};
+
+&spi {
+	status = "okay";
+
+	flash@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <25000000>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			/* CONFIRM all offsets/sizes against `cat /proc/mtd`.
+			 * Layout below assumes an 8 MB flash; only u-boot and art
+			 * offsets are critical to preserve. */
+			partition@0 {
+				label = "u-boot";
+				reg = <0x000000 0x010000>;
+				read-only;
+			};
+
+			partition@10000 {
+				label = "u-boot-env";      /* CONFIRM exists/offset */
+				reg = <0x010000 0x010000>;
+			};
+
+			partition@20000 {
+				label = "firmware";        /* kernel+rootfs; OpenWrt auto-splits */
+				reg = <0x020000 0x7d0000>; /* CONFIRM size (8MB - boot - art) */
+				compatible = "denx,uimage";
+			};
+
+			art: partition@7f0000 {
+				label = "art";             /* radio calibration — PRESERVE */
+				reg = <0x7f0000 0x010000>;
+				read-only;
+			};
+		};
+	};
+};
+
+&wmac {
+	status = "okay";
+	mtd-cal-data = <&art 0x1000>;   /* CONFIRM cal offset within art */
+};

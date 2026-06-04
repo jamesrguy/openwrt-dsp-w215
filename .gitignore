@@ -1,0 +1,7 @@
+# Build output / scratch
+*.o
+*.bin
+*.elf
+tmp/
+build/
+.DS_Store
