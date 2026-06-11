@@ -48,10 +48,13 @@
 			gpios = <&gpio 27 GPIO_ACTIVE_LOW>;
 		};
 
-		/* CONFIRM: stock boot also toggles gpio19 — identify what it drives.
+		/*
+		 * GPIO 19 is a confirmed output line: system_manager drives it via
+		 * `led_gpio 0 19` in its init sequence, alongside the 26/27 LEDs.
+		 * Its exact role (extra indicator vs. control line) is TBD on the
+		 * bench — enable as an LED once identified, or expose via gpio-export.
 		led-2 {
-			function = LED_FUNCTION_WPS;
-			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_INDICATOR;
 			gpios = <&gpio 19 GPIO_ACTIVE_LOW>;
 		};
 		*/
@@ -60,7 +63,11 @@
 	keys {
 		compatible = "gpio-keys";
 
-		/* AR933x jumpstart/simple_config button. CONFIRM gpio number (often 11). */
+		/*
+		 * Stock exposes buttons as kernel drivers (/proc/reset_btn,
+		 * /proc/relay_btn), so the GPIO numbers aren't in userspace — read
+		 * them from the boot log or trace the pads. CONFIRM (often gpio 11/12).
+		 */
 		reset {
 			label = "reset";
 			linux,code = <KEY_RESTART>;

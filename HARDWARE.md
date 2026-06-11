@@ -8,15 +8,49 @@ doubt, don't probe a live mains device.
 Tools: Phillips/spudger, **3.3 V USB-TTL adapter**, multimeter, fine soldering
 iron, optionally a logic analyzer for the meter capture.
 
-## 0. Known already (from firmware RE — no teardown needed)
+> **Fast path:** once you have the serial root shell (§1), run
+> [`tools/stock-hw-dump.sh`](tools/stock-hw-dump.sh) on the device — it collects
+> `/proc/mtd`, `dmesg`, RAM/flash size, the relay-GPIO diff, meter samples, and a
+> full flash backup in one pass. Sections 2–5 explain what each output means.
 
-- SoC: **Atheros AR9330 (Hornet)**, MIPS 24Kc.
-- Console: **`ttyS0`, 115200 8N1** (`console=ttyS0,115200`).
-- Root on stock: `/dev/mtdblock6`; nvram on `mtdblock2`.
-- Status LED: bi-colour on **GPIO 26 / 27**.
-- Relay: a GPIO with IRQ (kernel: `RELAY_SWITCH_GPIO`).
-- Buttons via Atheros `simple_config` (jumpstart/WPS + reset).
-- Power meter: **Prolific PL8331** on **`ttyS0`** @115200, ASCII-hex framing.
+## 0. Known from firmware RE (no teardown needed)
+
+Established by disassembling the stock 1.14 rootfs (`prolific`, `led_gpio`,
+`system_manager`, `wlan_manager`, `gpio_module.ko`):
+
+- **SoC:** Atheros AR9330 (Hornet), MIPS 24Kc, big-endian.
+- **Console:** `ttyS0` @ **115200 8N1** (`console=ttyS0,115200`). The serial
+  console is an **askfirst root `ash` shell with no password**
+  (`/etc/inittab`: `ttyS0::askfirst:/bin/ash`) — just press Enter after boot.
+- **Stock flash use:** rootfs on `/dev/mtdblock6`, nvram on `mtdblock2`.
+- **Status LED:** bi-colour — **GPIO 26 (green) + GPIO 27 (red)**. Managers drive
+  `26 on / 27 off` for one state and `26 off / 27 on` for the other (green vs
+  red; both ⇒ amber).
+- **GPIO 19:** a third output line driven through the same path
+  (`led_gpio 0 19` in `system_manager`'s init sequence) — an LED/indicator whose
+  exact function is TBD on the bench.
+- **GPIO access (stock):** a custom char driver **`/dev/gpio`** (`gpio_module.ko`)
+  driven by the `led_gpio <action> <gpio>` tool, where **action 0=off, 1=on,
+  2=MP(test)**. On every write the module logs `gpio_out = 0x<old>, 0x<new>` —
+  diffing those two words reveals exactly which bit (= GPIO number) an LED/relay
+  op toggled. OpenWrt uses the standard `gpio-ath79` controller, so these GPIO
+  numbers carry over directly.
+- **Buttons:** handled by **kernel drivers** exposing `/proc/reset_btn` and
+  `/proc/relay_btn` (the `reset_gpio`/`wps_gpio` daemons just poll these). The
+  button GPIO *numbers* live in the built-in board code, not userspace — get them
+  from the boot log or by tracing (see §4).
+- **Relay:** driven via a `led_gpio`-style shell-out plus `CheckRelayValue`,
+  gated by config (`sp_relay_info`, `relay_enabled`) and **safety cut-outs**
+  (`overload_watt`, `overload_temperature`). The pin isn't a static immediate
+  (variadic `_system()` + config), so confirm it live (§4).
+- **Power meter:** **Prolific PL8331** on **`/dev/ttyS0`**. `prolific` issues **no
+  `tcsetattr`** — it inherits the port's 115200 8N1, confirming the meter shares
+  the console UART. It opens the port, writes a command, reads a ~10-byte
+  ASCII-hex burst, closes, and publishes decoded values to ramfs:
+  `/var/tmp/MeterWatt` (`%.1f` W), `/var/tmp/MeterStatus` (5 ints),
+  `/var/tmp/MeterVersion`, `/var/tmp/MeterSigNumber`.
+- **Cloud phone-home (security):** `prolific` POSTs SOAP `funPushNotification`
+  to `wrpd.dlink.com` on events — worth blocking; an OpenWrt image drops it.
 
 ## 1. UART console
 
@@ -67,30 +101,56 @@ for i in $(seq 0 7); do dd if=/dev/mtd$i of=/tmp/mtd$i.bin 2>/dev/null; done
 
 ## 4. GPIO map (the numbers to confirm)
 
-Determine these and update the DTS:
+LEDs are known (**26** green, **27** red; **19** = third line). Still to pin down:
+polarity, and the **relay + button** numbers. Do this from the stock serial
+console — note that stock has **no `/sys/class/gpio`**; it drives GPIO through
+`/dev/gpio` via the `led_gpio` tool.
 
-| Function | DTS placeholder | How to confirm |
-|----------|-----------------|----------------|
-| Relay | `CONFIRM: relay gpio` | toggle GPIOs from U-Boot/Linux and listen for the relay click; or trace from the relay-driver transistor |
-| Reset button | `CONFIRM: ~gpio 11` | read GPIO state while pressing; AR933x `simple_config`/jumpstart is commonly GPIO 11 |
-| WPS button | `CONFIRM:` | may be the same physical button as reset; check |
-| 3rd LED? | `CONFIRM: gpio 19` | stock boot toggles GPIO 19 alongside 26/27 — identify what it drives |
-| LED 26/27 polarity | `CONFIRM:` | set/clear and observe green vs red |
+| Function | Status | How to confirm on stock |
+|----------|--------|--------------------------|
+| LED green / red | **GPIO 26 / 27** | `led_gpio 1 26` (on) / `led_gpio 0 26` (off); watch the LED for polarity |
+| 3rd line | **GPIO 19** | `led_gpio 1 19` / `led_gpio 0 19`; observe what changes |
+| Relay | confirm number | clear log → toggle relay → read the `gpio_out` diff (below) |
+| Reset button | from boot log / trace | `cat /proc/reset_btn` shows press state, not the pin number |
+| Relay button | from boot log / trace | `cat /proc/relay_btn` shows press state, not the pin number |
 
-From Linux you can probe with the sysfs GPIO interface (or `gpio` tool):
+**Relay GPIO via the module's debug print** (the reliable trick, since there's
+no sysfs on stock):
 
 ```sh
-echo N > /sys/class/gpio/export; cat /sys/class/gpio/gpioN/value   # read buttons
-echo out > /sys/class/gpio/gpioN/direction; echo 1 > .../value      # drive relay/LED
+dmesg -c >/dev/null            # clear the ring buffer
+/var/sbin/relay 1              # socket ON  (or HNAP socket-on from your PC)
+dmesg | grep gpio_out          # -> gpio_out = 0x<old>, 0x<new>
+/var/sbin/relay 0              # socket OFF
+dmesg | grep gpio_out
+# The one bit that flips between <old> and <new> is the relay GPIO number.
 ```
+
+The same `gpio_out` diff confirms LED polarity: drive `led_gpio 1 26`, see which
+bit sets and whether green lights with the bit high or low. The button GPIO
+numbers aren't exposed this way — read them from the U-Boot/kernel boot log
+(board init usually prints them) or trace the button pads to the SoC.
 
 ## 5. Meter serial capture (to implement `poll_meter()`)
 
+Confirmed from `prolific`: it opens `/dev/ttyS0` (no `tcsetattr`, so 115200 8N1
+inherited), **writes a command then reads a ~10-byte ASCII-hex burst**, and
+publishes `/var/tmp/MeterWatt` (`%.1f` W) and `/var/tmp/MeterStatus` (5 ints).
+The exact on-wire command/response bytes still need a capture to reimplement
+`poll_meter()` cleanly.
+
+> **Caveat:** the meter shares `ttyS0` with the console, so you can't cleanly
+> `cat /dev/ttyS0` while the getty/`prolific` are running. Easiest validations:
+> (a) read `/var/tmp/MeterWatt` under a known load to verify scaling; (b) to get
+> raw frames, `killall prolific` first, then tap the line with a second USB-TTL
+> or `meterd -r`. This is the **highest-risk remaining unknown** — relay + LEDs +
+> Wi-Fi can be brought up on OpenWrt before metering is finished.
+
 With the stock firmware running, capture the PL8331 traffic on `ttyS0`
-(115200 8N1) — either tap the line with a logic analyzer / second USB-TTL, or
-build `dspw215-meterd` in **raw mode** (`meterd -r /dev/ttyS0`) which just dumps
-bytes. Drive a known resistive load (e.g. a 60 W bulb) and correlate the decoded
-values with `/var/tmp/MeterWatt`. Record:
+(115200 8N1) — tap the line with a logic analyzer / second USB-TTL, or build
+`dspw215-meterd` in **raw mode** (`meterd -r /dev/ttyS0`). Drive a known
+resistive load (e.g. a 60 W bulb) and correlate decoded values with
+`/var/tmp/MeterWatt`. Record:
 
 - the exact poll command bytes (ASCII-hex on the wire),
 - the response frame layout (offsets of voltage / current / power / energy / temp),
