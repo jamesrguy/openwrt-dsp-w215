@@ -31,6 +31,11 @@ values that can only be read off the physical board (flash size, exact MTD
 offsets, the relay/button GPIO numbers, and how the meter UART is wired). Those
 are marked `CONFIRM:` throughout and enumerated in [HARDWARE.md](HARDWARE.md).
 
+**Start here:** [PLAN.md](PLAN.md) is the end-to-end route from this scaffold to
+a flashed, working device (with non-destructive RAM-boot validation before any
+flash write). [UART-EXTRACTION.md](UART-EXTRACTION.md) is the step-by-step for
+pulling the needed values + a flash backup off the device over UART.
+
 Roadmap:
 
 - [x] Identify SoC, Wi-Fi, console baud, rootfs partition, meter chip/transport
@@ -47,8 +52,12 @@ Roadmap:
 ```
 openwrt/
 ├── README.md                 # this file
-├── HARDWARE.md               # teardown + UART + flash + GPIO bring-up checklist
+├── PLAN.md                   # end-to-end roadmap: scaffold -> flashed device
+├── UART-EXTRACTION.md        # pull values + flash backup off the device via UART
+├── HARDWARE.md               # teardown + flash + GPIO bring-up checklist
 ├── BUILD.md                  # add to OpenWrt buildroot, build, flash, recover
+├── tools/
+│   └── stock-hw-dump.sh      # one-shot stock-firmware data collector
 ├── dts/
 │   └── ar9330_dlink_dsp-w215.dts
 ├── image/
